@@ -32,7 +32,7 @@ func DownloadFiles(downloadType entities.DownloadType, files []string) (entities
 		downloadStatus = downloadSerially(downloadEntity)
 		downloadEntity.EndTime = time.Now()
 	case entities.ConcurrentDownload:
-		downloadStatus = downloadSerially(downloadEntity)
+		downloadStatus = downloadConcurrently(downloadEntity)
 	}
 
 	downloadEntity.Status = downloadStatus
@@ -70,16 +70,22 @@ func downloadAndSaveFileLocally(url string) error {
 	extension := filepath.Ext(fileNameWithExtension)
 	fileName := strings.TrimSuffix(fileNameWithExtension, extension)
 
-	filepath := entities.DownloadFilePath + fileName + uuid.New().String() + "." + extension
+	fileNameWithExtension = fileName + uuid.New().String() + extension
+	filePath := entities.DownloadFilePath + fileNameWithExtension
 
-	out, err := os.Create(filepath)
+	out, err := os.Create(filePath)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
 	_, err = io.Copy(out, resp.Body)
-	return err
+	if err != nil {
+		return err
+	}
+
+	entities.DownloadedFilesToPathMap[fileNameWithExtension] = filePath
+	return nil
 }
 
 func GetDownloadStatus(downloadId string) (*entities.DownloadEntity, error) {
