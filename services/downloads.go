@@ -8,9 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -29,10 +27,11 @@ func DownloadFiles(downloadType entities.DownloadType, files []string) (entities
 	switch downloadType {
 	case entities.SerialDownload:
 		downloadEntity.StartTime = time.Now()
-		downloadStatus = downloadSerially(downloadEntity)
+		downloadStatus = downloadSerially(downloadEntity) // sync
 		downloadEntity.EndTime = time.Now()
 	case entities.ConcurrentDownload:
-		downloadStatus = downloadConcurrently(downloadEntity)
+		go downloadConcurrently(downloadEntity) // async
+		downloadStatus = entities.DownloadStatusQueued
 	}
 
 	downloadEntity.Status = downloadStatus
@@ -41,37 +40,86 @@ func DownloadFiles(downloadType entities.DownloadType, files []string) (entities
 }
 
 func downloadSerially(downloadEntity *entities.DownloadEntity) entities.DownloadStatus {
+	baseFilePath, err := createAndGetBaseFilePath(downloadEntity)
+	if err != nil {
+		log.Println(err)
+		return entities.DownloadStatusFailed
+	}
+
 	for _, url := range downloadEntity.Files {
-		err := downloadAndSaveFileLocally(url)
+		err := downloadAndSaveFileLocally(url, baseFilePath)
 		if err != nil {
 			log.Println(err)
 			return entities.DownloadStatusFailed
 		}
 	}
 
+	entities.DownloadedFilesToPathMap[downloadEntity.Id] = baseFilePath
 	return entities.DownloadStatusSuccess
 }
 
-func downloadConcurrently(downloadEntity *entities.DownloadEntity) entities.DownloadStatus {
+func downloadConcurrently(downloadEntity *entities.DownloadEntity) {
+	downloadEntity.StartTime = time.Now()
 
-	return entities.DownloadStatusQueued
+	baseFilePath, err := createAndGetBaseFilePath(downloadEntity)
+	if err != nil {
+		log.Println(err)
+		downloadEntity.EndTime = time.Now()
+		downloadEntity.Status = entities.DownloadStatusFailed
+		return
+	}
+
+	noOfFiles := len(downloadEntity.Files)
+
+	workQueue := make(chan string, noOfFiles)
+	for _, url := range downloadEntity.Files {
+		workQueue <- url
+	}
+
+	parallelWorkersCount := entities.ParallelFileDownloadWorkersCount
+	if parallelWorkersCount > noOfFiles {
+		parallelWorkersCount = noOfFiles
+	}
+
+	for i := 0; i < parallelWorkersCount; i++ {
+		go func(channel chan string) {
+			for {
+				url := <-channel
+				err := downloadAndSaveFileLocally(url, baseFilePath)
+				if err != nil {
+					log.Println(err)
+				}
+			}
+		}(workQueue)
+	}
+	
+	downloadEntity.EndTime = time.Now()
+	downloadEntity.Status = entities.DownloadStatusSuccess
+}
+
+func createAndGetBaseFilePath(downloadEntity *entities.DownloadEntity) (string, error) {
+	baseFilePath := entities.DownloadFilePath + downloadEntity.Id + "/"
+	err := os.Mkdir(baseFilePath, 0744) // Only the owner can read, write & execute. Everyone else can only read.
+	if err != nil {
+		log.Println(err)
+		return "", err
+	}
+
+	return baseFilePath, nil
 }
 
 
 
-func downloadAndSaveFileLocally(url string) error {
+func downloadAndSaveFileLocally(url string, baseFilePath string) error {
 	resp, err := http.Get(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	fileNameWithExtension := path.Base(url)
-	extension := filepath.Ext(fileNameWithExtension)
-	fileName := strings.TrimSuffix(fileNameWithExtension, extension)
-
-	fileNameWithExtension = fileName + uuid.New().String() + extension
-	filePath := entities.DownloadFilePath + fileNameWithExtension
+	extension := filepath.Ext(url)
+	fileName := uuid.New().String() + extension
+	filePath := baseFilePath + fileName
 
 	out, err := os.Create(filePath)
 	if err != nil {
@@ -84,7 +132,6 @@ func downloadAndSaveFileLocally(url string) error {
 		return err
 	}
 
-	entities.DownloadedFilesToPathMap[fileNameWithExtension] = filePath
 	return nil
 }
 

@@ -8,4 +8,5 @@ const (
 	DownloadStatusSuccess DownloadStatus = "SUCCESS"
 
 	DownloadFilePath string = "/Users/subhamd/Desktop/downloaded_file/"
+	ParallelFileDownloadWorkersCount = 10
 )
